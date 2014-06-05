@@ -1,7 +1,7 @@
 # get rid of that stupid cache mechanism
 rm -f config.cache
 
-AC_INIT(enesim-neko, 0.0.1, enesim-devel@googlegroups.com)
+AC_INIT(ender-neko, 0.0.1, enesim-devel@googlegroups.com)
 AC_PREREQ(2.52)
 AC_CONFIG_SRCDIR(configure.ac)
 AC_CANONICAL_BUILD
@@ -9,7 +9,7 @@ AC_CANONICAL_HOST
 AC_ISC_POSIX
 
 AM_INIT_AUTOMAKE(1.6 dist-bzip2)
-AM_CONFIG_HEADER(src/include/config.h)
+AM_CONFIG_HEADER(config.h)
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 
 AC_PROG_CC
@@ -42,28 +42,25 @@ esac
 AC_SUBST(create_shared_lib)
 
 # Common
-PKG_CHECK_MODULES(ENDER, [ender >= 0.0.1])
+PKG_CHECK_MODULES(ENDER, [ender >= 0.0.8])
 
-# Scripting
 ## Neko
 NEKO_LIBS=
 AC_CHECK_LIB(neko, neko_val_callEx,
              [AC_CHECK_HEADERS(neko.h neko_vm.h, have_neko="yes", have_neko="no") ],
-             have_neko="yes")
+             [have_neko="no"])
 AC_CHECK_PROG(have_neko_bin, nekoc, yes, no)
 if test "x$have_neko" = "xyes" && test "x$have_neko_bin" = "xyes"; then
         NEKO_LIBS=-lneko
-        AC_DEFINE(BUILD_SCRIPT_NEKO, [1], [Build support for NekoVM scripts])
 else
-	AC_ERROR("No ender found")
+	AC_ERROR("No NEKO found")
 fi
-AM_CONDITIONAL(BUILD_SCRIPT_NEKO, test "x$have_neko" = "xyes" && test "x$have_neko_bin" = "xyes")
 AC_SUBST(NEKO_LIBS)
 
-ESCEN_CFLAGS="$ENDER_CFLAGS"
-ESCEN_LIBS="$ENDER_LIBS $NEKO_LIBS"
-AC_SUBST(ESCEN_CFLAGS)
-AC_SUBST(ESCEN_LIBS)
+ENDER_NEKO_CFLAGS="$ENDER_CFLAGS"
+ENDER_NEKO_LIBS="$ENDER_LIBS $NEKO_LIBS"
+AC_SUBST(ENDER_NEKO_CFLAGS)
+AC_SUBST(ENDER_NEKO_LIBS)
 
 ## Make the debug preprocessor configurable
 

@@ -17,33 +17,141 @@
  */
 #include "Ender.h"
 #include <neko.h>
-#include <neko_vm.h>
 
-DEFINE_KIND(k_element);
-DEFINE_ENTRY_POINT(neko_ender_init);
-
-void neko_ender_init(void)
+DEFINE_KIND(k_item);
+DEFINE_KIND(k_lib);
+DEFINE_ENTRY_POINT(ender_neko_init)
+/*============================================================================*
+ *                                  Local                                     *
+ *============================================================================*/
+static void ender_neko_item_finalize(value v)
 {
-	kind_share(&k_element, "ender_element");
-	ender_init(NULL, NULL);
+	ender_item_unref(val_data(v));
+}
+/*----------------------------------------------------------------------------*
+ *                                 Structs                                    *
+ *----------------------------------------------------------------------------*/
+static value ender_neko_struct_new(void)
+{
+	Ender_Item *i;
+	value v = val_this();
+	value intptr;
+
+	intptr = val_field(v, val_id("__intptr"));
+	val_check_kind(intptr, k_item);
+
+	i = val_data(intptr);
+	//printf("creating a new struct of type %s\n", ender_item_name_get(i));
+	return val_true;
+}
+
+static value ender_neko_struct_generate_class(Ender_Item *i)
+{
+	Eina_List *items;
+	value ret;
+	value intptr;
+	value f;
+
+	ret = alloc_object(NULL);
+	intptr = alloc_abstract(k_item, i);
+	val_gc(intptr, ender_neko_item_finalize);
+	alloc_field(ret, val_id("__intptr"), intptr);
+
+	/* ctor */
+	f = alloc_function(ender_neko_struct_new, 0, "new");
+	alloc_field(ret, val_id("new"), f);
+
+	/* TODO iterate over the fields */
+	/* TODO iterate over the functions */
+	return ret;	
+}
+/*----------------------------------------------------------------------------*
+ *                               Primitives                                   *
+ *----------------------------------------------------------------------------*/
+static value load(value api)
+{
+	const Ender_Lib *lib;
+	Ender_Item *i;
+	Eina_List *items;
+	value ret;
+	value intptr;
+	value ns;
+
+	if (!val_is_string(api))
+		return val_null;
+	lib = ender_lib_find(val_string(api));
+	if (!lib)
+		return val_null;
+
+	/* create a lib object */
+	ret = alloc_object(NULL);
+	intptr = alloc_abstract(k_lib, (void *)lib);
+	alloc_field(ret, val_id("__intptr"), intptr);
+
+	/* create all the possible objects,structs,enums as classes */
+	/* for cases like foo.bar.s, we need to create intermediary empty objects */
+	items = ender_lib_item_list(lib, ENDER_ITEM_TYPE_STRUCT);
+	EINA_LIST_FREE(items, i)
+	{
+		value s;
+		const char *orig;
+		char *name, *token, *str, *current, *rname = NULL, *saveptr = NULL;
+		int j;
+
+		orig = ender_item_name_get(i);
+		name = strdup(orig);
+		rname = name;
+		current = calloc(strlen(name), 1);
+		
+		for (j = 0, str = name; ; j++, str = NULL)
+		{
+			token = strtok_r(str, ".", &saveptr);
+			if (!token)
+				break;
+			rname = token;
+			/* first time, in case the first prefix is different
+			 * from the main lib name add a new namespace
+			 */
+			if (!j && !strcmp(token, ender_lib_name_get(lib)))
+			{
+				strcat(current, token);
+				continue;
+			}
+			strcat(current, ".");
+			strcat(current, token);
+			/* we skip the last one */
+			if (strcmp(orig, current))
+			{
+				printf("TODO create intermediary namespaces %s\n", current);
+			}
+		}
+		/* finally generate the value */
+		s = ender_neko_struct_generate_class(ender_item_ref(i));
+		alloc_field(ret, val_id(rname), s);
+		ender_item_unref(i);
+
+		free(current);
+		free(name);
+
+	}
+	return ret;
+}
+
+DEFINE_PRIM(load, 1);
+/*============================================================================*
+ *                                 Global                                     *
+ *============================================================================*/
+/*----------------------------------------------------------------------------*
+ *                  The Neko FFI C interface functions                        *
+ *----------------------------------------------------------------------------*/
+void ender_neko_init(void)
+{
+	kind_share(&k_item, "ender_item");
+	kind_share(&k_lib, "ender_lib");
+	ender_init();
 }
 
 #if 0
-/* the descriptor interface */
-typedef struct _Ender_Descriptor Ender_Descriptor;
-
-typedef void (*Ender_List_Callback)(const char *name, void *data);
-typedef void (*Ender_Property_List_Callback)(Ender_Descriptor *e, const char *name, void *data);
-
-EAPI Ender_Descriptor * ender_descriptor_find(const char *name);
-EAPI void ender_descriptor_property_list(Ender_Descriptor *ed, Ender_Property_List_Callback cb, void *data);
-EAPI Ender_Property * ender_descriptor_property_get(Ender_Descriptor *ed, const char *name);
-EAPI void ender_descriptor_list(Ender_List_Callback cb, void *data);
-EAPI Eina_Bool ender_descriptor_exists(const char *name);
-EAPI Ender_Type ender_descriptor_type(Ender_Descriptor *ed);
-EAPI const char * ender_descriptor_name_get(Ender_Descriptor *ed);
-EAPI Ender_Descriptor * ender_descriptor_parent(Ender_Descriptor *ed);
-#endif
 /*============================================================================*
  *                                  Local                                     *
  *============================================================================*/
@@ -279,37 +387,9 @@ static value element_value_clear(value element, value name)
 	ender_element_value_clear(e, c_name);
 }
 
-#if 0
-EAPI Ender_Descriptor * ender_element_descriptor_get(Ender_Element *e);
-EAPI Ender_Property * ender_element_property_get(Ender_Element *e, const char *name);
-EAPI void ender_element_property_value_set_valist(Ender_Element *e, Ender_Property *prop, va_list va_args);
-EAPI void ender_element_property_value_set(Ender_Element *e, Ender_Property *prop, ...);
-EAPI void ender_element_property_value_set_simple(Ender_Element *e, Ender_Property *prop, Ender_Value *value);
-
-EAPI void ender_element_value_get(Ender_Element *e, const char *name, ...);
-EAPI void ender_element_value_get_valist(Ender_Element *e, const char *name, va_list var_args);
-EAPI void ender_element_value_get_simple(Ender_Element *e, const char *name, Ender_Value *value);
-
-EAPI void ender_element_value_set(Ender_Element *e, const char *name, ...);
-EAPI void ender_element_value_set_valist(Ender_Element *e, const char *name, va_list var_args);
-EAPI void ender_element_value_set_simple(Ender_Element *e, const char *name, Ender_Value *value);
-
-EAPI void ender_element_value_add(Ender_Element *e, const char *name, ...);
-EAPI void ender_element_value_add_valist(Ender_Element *e, const char *name, va_list var_args);
-EAPI void ender_element_value_add_simple(Ender_Element *e, const char *name, Ender_Value *value);
-
-EAPI void ender_element_value_remove(Ender_Element *e, const char *name, ...);
-EAPI void ender_element_value_remove_valist(Ender_Element *e, const char *name, va_list var_args);
-EAPI void ender_element_value_remove_simple(Ender_Element *e, const char *name, Ender_Value *value);
-
-EAPI Enesim_Renderer * ender_element_renderer_get(Ender_Element *e);
-EAPI Ender_Element * ender_element_renderer_from(Enesim_Renderer *r);
-
-EAPI Ender_Element * ender_element_parent_get(Ender_Element *e);
-#endif
-
 DEFINE_PRIM(element_new, 1);
 DEFINE_PRIM(element_initialize, 1);
 DEFINE_PRIM(element_value_add, 3);
 DEFINE_PRIM(element_value_remove, 3);
 DEFINE_PRIM(element_value_clear, 2);
+#endif

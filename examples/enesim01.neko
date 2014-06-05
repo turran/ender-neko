@@ -1,0 +1,9 @@
+// $> nekoc enesim01.neko
+// $> neko enesim01.n
+
+var load = $loader.loadprim("ender@load", 1);
+var enesim = load("enesim");
+var m = enesim.matrix.new();
+var r = enesim.rectangle.new();
+
+m.set_xx(10);
