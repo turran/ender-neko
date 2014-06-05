@@ -18,15 +18,83 @@
 #include "Ender.h"
 #include <neko.h>
 
-DEFINE_KIND(k_item);
-DEFINE_KIND(k_lib);
-DEFINE_ENTRY_POINT(ender_neko_init)
 /*============================================================================*
  *                                  Local                                     *
  *============================================================================*/
+typedef struct _Ender_Neko_Object
+{
+	/* the item associated with the data */
+	Ender_Item *i;
+	/* the real allocated object */
+	void *o;
+} Ender_Neko_Object;
+
+DEFINE_KIND(k_obj);
+DEFINE_KIND(k_item);
+DEFINE_KIND(k_lib);
+DEFINE_ENTRY_POINT(ender_neko_init)
+
+/*----------------------------------------------------------------------------*
+ *                            Ender Neko objects                              *
+ *----------------------------------------------------------------------------*/
+static void ender_neko_obj_finalize(value v)
+{
+	Ender_Neko_Object *no = val_data(v);
+
+	ender_item_unref(no->i);
+	/* TODO we might need to call the dtor */
+	free(no->o);
+	free(no);
+}
+
+static value ender_neko_obj_new(Ender_Item *i, void *o)
+{
+	Ender_Neko_Object *no;
+	value intptr;
+	value ret;
+
+	no = calloc(1, sizeof(Ender_Neko_Object));
+	no->i = ender_item_ref(i);
+	no->o = o;
+
+	intptr = alloc_abstract(k_obj, no);
+	val_gc(intptr, ender_neko_obj_finalize);
+
+	ret = alloc_object(NULL);
+	alloc_field(ret, val_id("__intptr"), intptr);
+
+	return ret;
+}
+
+/*----------------------------------------------------------------------------*
+ *                                 Items                                      *
+ *----------------------------------------------------------------------------*/
 static void ender_neko_item_finalize(value v)
 {
 	ender_item_unref(val_data(v));
+}
+
+static void ender_neko_item_initialize(value v, Ender_Item *i)
+{
+	value intptr;
+
+	intptr = alloc_abstract(k_item, i);
+	val_gc(intptr, ender_neko_item_finalize);
+	alloc_field(v, val_id("__intptr"), intptr);
+}
+/*----------------------------------------------------------------------------*
+ *                                  Attrs                                      *
+ *----------------------------------------------------------------------------*/
+static value ender_neko_attr_set(value *args, int nargs)
+{
+	printf("setting attr %d\n", nargs);
+	return val_true;
+}
+
+static value ender_neko_attr_get(value *args, int nargs)
+{
+	printf("getting attr %d\n", nargs);
+	return val_true;
 }
 /*----------------------------------------------------------------------------*
  *                                 Structs                                    *
@@ -34,15 +102,52 @@ static void ender_neko_item_finalize(value v)
 static value ender_neko_struct_new(void)
 {
 	Ender_Item *i;
+	Ender_Item *f;
+	Eina_List *fields;
 	value v = val_this();
 	value intptr;
+	value ret;
+	void *o;
+	size_t size;
 
 	intptr = val_field(v, val_id("__intptr"));
 	val_check_kind(intptr, k_item);
 
 	i = val_data(intptr);
-	//printf("creating a new struct of type %s\n", ender_item_name_get(i));
-	return val_true;
+
+	/* create the struct */
+	size = ender_item_struct_size_get(i);
+	o = calloc(size, 1);
+	ret = ender_neko_obj_new(ender_item_ref(i), o);
+
+	/* iterate over the fields */
+	fields = ender_item_struct_fields_get(i);
+	EINA_LIST_FREE(fields, f)
+	{
+		Ender_Item *type;
+		value getter;
+		value setter;
+		char *set_name;
+		char *get_name;
+
+		/* given that neko does not support generic setters/getters
+		 * we need to create the functions ourselves
+		 */
+		if (asprintf(&set_name, "set_%s", ender_item_name_get(f)) < 0)
+			break;
+		if (asprintf(&get_name, "get_%s", ender_item_name_get(f)) < 0)
+			break;
+
+		setter = alloc_function(ender_neko_attr_set, VAR_ARGS, "ener_neko_attr_set");
+		//ender_neko_item_initialize(setter, ender_item_ref(f));
+		getter = alloc_function(ender_neko_attr_get, VAR_ARGS, "ener_neko_attr_get");
+		//ender_neko_item_initialize(getter, ender_item_ref(f));
+		alloc_field(ret, val_id(get_name), getter);
+		alloc_field(ret, val_id(set_name), setter);
+		ender_item_unref(f);
+	}
+	/* TODO iterate over the functions */
+	return ret;
 }
 
 static value ender_neko_struct_generate_class(Ender_Item *i)
@@ -53,16 +158,12 @@ static value ender_neko_struct_generate_class(Ender_Item *i)
 	value f;
 
 	ret = alloc_object(NULL);
-	intptr = alloc_abstract(k_item, i);
-	val_gc(intptr, ender_neko_item_finalize);
-	alloc_field(ret, val_id("__intptr"), intptr);
+	ender_neko_item_initialize(ret, i);
 
 	/* ctor */
 	f = alloc_function(ender_neko_struct_new, 0, "new");
 	alloc_field(ret, val_id("new"), f);
 
-	/* TODO iterate over the fields */
-	/* TODO iterate over the functions */
 	return ret;	
 }
 /*----------------------------------------------------------------------------*
@@ -146,6 +247,7 @@ DEFINE_PRIM(load, 1);
  *----------------------------------------------------------------------------*/
 void ender_neko_init(void)
 {
+	kind_share(&k_obj, "ender_neko_object");
 	kind_share(&k_item, "ender_item");
 	kind_share(&k_lib, "ender_lib");
 	ender_init();
