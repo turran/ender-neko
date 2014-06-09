@@ -17,10 +17,14 @@
  */
 #include "Ender.h"
 #include <neko.h>
-
+#include <neko_vm.h>
 /*============================================================================*
  *                                  Local                                     *
  *============================================================================*/
+/* We need to get the environment when a function is called. For that we need
+ * create this macro given that the vm struct is not exported on neko
+ */
+#define NEKOVM_ENV(v) *((value *)((char *)(v) + sizeof(void *) + sizeof(void *)))
 typedef struct _Ender_Neko_Object
 {
 	/* the item associated with the data */
@@ -67,6 +71,9 @@ static value ender_neko_obj_new(Ender_Item *i, void *o)
 }
 
 /*----------------------------------------------------------------------------*
+ *                                Values                                      *
+ *----------------------------------------------------------------------------*/
+/*----------------------------------------------------------------------------*
  *                                 Items                                      *
  *----------------------------------------------------------------------------*/
 static void ender_neko_item_finalize(value v)
@@ -74,27 +81,271 @@ static void ender_neko_item_finalize(value v)
 	ender_item_unref(val_data(v));
 }
 
+static value ender_neko_item_new(Ender_Item *i)
+{
+	value ret;
+
+	ret = alloc_abstract(k_item, i);
+	val_gc(ret, ender_neko_item_finalize);
+	return ret;
+}
+
 static void ender_neko_item_initialize(value v, Ender_Item *i)
 {
 	value intptr;
 
-	intptr = alloc_abstract(k_item, i);
-	val_gc(intptr, ender_neko_item_finalize);
+	intptr = ender_neko_item_new(i);
 	alloc_field(v, val_id("__intptr"), intptr);
+}
+
+/*----------------------------------------------------------------------------*
+ *                                  Basic                                     *
+ *----------------------------------------------------------------------------*/
+static value ender_neko_basic_new(Ender_Item *i, Ender_Value *v)
+{
+	value ret = val_null;
+
+	switch (ender_item_basic_value_type_get(i))
+	{
+		case ENDER_VALUE_TYPE_BOOL:
+		ret = alloc_bool(v->b);
+		break;
+
+		case ENDER_VALUE_TYPE_UINT32:
+		ret = alloc_best_int(v->u32);
+		break;
+
+		case ENDER_VALUE_TYPE_INT32:
+		ret = alloc_best_int(v->u32);
+		break;
+
+		case ENDER_VALUE_TYPE_DOUBLE:
+		ret = alloc_float(v->d);
+		break;
+
+		case ENDER_VALUE_TYPE_STRING:
+		ret = alloc_string(v->ptr);
+		break;
+
+		case ENDER_VALUE_TYPE_POINTER:
+		case ENDER_VALUE_TYPE_UINT64:
+		case ENDER_VALUE_TYPE_INT64:
+		default:
+		failure("Unsupported value type");
+		break;
+	}
+	return ret;
+}
+
+static Eina_Bool ender_neko_basic_from_val(Ender_Item *i, Ender_Value *v, value val)
+{
+	switch (ender_item_basic_value_type_get(i))
+	{
+		case ENDER_VALUE_TYPE_DOUBLE:
+		{
+			switch (val_type(val))
+			{
+				case VAL_INT:
+				v->d = val_int(val);
+				break;
+
+				case VAL_FLOAT:
+				v->d = val_float(val);
+				break;
+
+				default:
+				failure("Unsupported neko value");
+				break;
+			}
+		}
+		break;
+
+		default:
+		failure("Unsupported value type");
+	}
+	return EINA_TRUE;
+}
+/*----------------------------------------------------------------------------*
+ *                                  Arg                                       *
+ *----------------------------------------------------------------------------*/
+/* convert the neko arg into an ender value */
+static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value val)
+{
+	Ender_Item *type;
+	Ender_Item_Arg_Direction dir;
+	Eina_Bool ret = EINA_FALSE;
+
+	type = ender_item_arg_type_get(i);
+	dir = ender_item_arg_direction_get(i);
+
+	/* TODO handle the transfer */
+	/* handle the in/out direction */
+	if (dir == ENDER_ITEM_ARG_DIRECTION_IN)
+	{
+		switch (ender_item_type_get(type))
+		{
+			case ENDER_ITEM_TYPE_BASIC:
+			ret = ender_neko_basic_from_val(type, v, val);
+			break;
+
+			default:
+			failure("Unsupported ender value");
+			break;
+		}
+	}
+	else
+	{
+		/* for in/inout directions we always pass a pointer */
+	}
+	ender_item_unref(type);
+	return ret;
+}
+/*----------------------------------------------------------------------------*
+ *                               Functions                                    *
+ *----------------------------------------------------------------------------*/
+static value ender_neko_method_call(value *args, int nargs)
+{
+	Ender_Neko_Object *obj;
+	Ender_Item *i;
+	Ender_Item *type;
+	Ender_Item *a;
+	Ender_Value *passed_args;
+	Eina_List *info_args;
+	Eina_Bool valid;
+	value intptr;
+	value self;
+	int nnargs;
+	int arg = 0;
+	int neko_arg = 0;
+	
+	/* get our function environment */
+	intptr = NEKOVM_ENV(neko_vm_current());
+	i = val_data(intptr);
+
+	/* check the number of arguments */
+	nnargs = ender_item_function_args_count(i);
+	/* we increment by one nargs because for methods the first argument
+	 * is the object itself
+	 */
+	if (nnargs != nargs)
+		failure("Invalid number of arguments");
+
+	/* check that we have a valid object */
+	self = val_this();
+	intptr = val_field(self, val_id("__intptr")); 
+	val_check_kind(intptr, k_obj);
+	obj = val_data(intptr);
+
+	/* setup the args, plus one because of the self arg */
+	passed_args = calloc(nnargs + 1, sizeof(Ender_Value));
+
+	/* set self */
+	passed_args[arg].ptr = obj->o;
+	arg++;
+
+	/* set the args */
+	info_args = ender_item_function_args_get(i);
+	EINA_LIST_FREE(info_args, a)
+	{
+		ender_neko_arg_from_val(a, &passed_args[arg], args[neko_arg]);
+		neko_arg++;
+		arg++;
+		ender_item_unref(a);
+	}
+	ender_item_function_call(i, passed_args);
+	free(passed_args);
+
+	return val_true;
 }
 /*----------------------------------------------------------------------------*
  *                                  Attrs                                      *
  *----------------------------------------------------------------------------*/
 static value ender_neko_attr_set(value *args, int nargs)
 {
-	printf("setting attr %d\n", nargs);
-	return val_true;
+	Ender_Neko_Object *obj;
+	Ender_Item *i;
+	Ender_Item *type;
+	Eina_Bool valid;
+	Ender_Value v;
+	value intptr;
+	value self;
+	
+	/* get our function environment */
+	intptr = NEKOVM_ENV(neko_vm_current());
+	i = val_data(intptr);
+
+	/* check that we have a valid object */
+	self = val_this();
+	intptr = val_field(self, val_id("__intptr")); 
+	val_check_kind(intptr, k_obj);
+	obj = val_data(intptr);
+
+	if (nargs != 1)
+		failure("Invalid number of arguments");
+
+	/* finally set the value */
+	type = ender_item_attr_type_get(i);
+	switch (ender_item_type_get(type))
+	{
+		case ENDER_ITEM_TYPE_BASIC:
+		valid = ender_neko_basic_from_val(type, &v, args[0]);
+		break;
+
+		default:
+		failure("Unsupported type");
+		break;
+	}
+	if (valid)
+	{
+		valid = ender_item_attr_value_set(i, obj->o, &v, NULL);
+	}
+	ender_item_unref(type);
+
+	if (valid)
+		return val_true;
+	else
+		return val_false;
 }
 
 static value ender_neko_attr_get(value *args, int nargs)
 {
-	printf("getting attr %d\n", nargs);
-	return val_true;
+	Ender_Neko_Object *obj;
+	Ender_Item *i;
+	Ender_Item *type;
+	Ender_Value v;
+	value self;
+	value intptr;
+	value ret = val_null;
+
+	/* get our function environment */
+	intptr = NEKOVM_ENV(neko_vm_current());
+	i = val_data(intptr);
+
+	/* check that we have a valid object */
+	self = val_this();
+	intptr = val_field(self, val_id("__intptr")); 
+	val_check_kind(intptr, k_obj);
+	obj = val_data(intptr);
+
+	if (nargs != 0)
+		failure("Invalid number of arguments");
+
+	/* finally get the value */
+	ender_item_attr_value_get(i, obj->o, &v, NULL);
+	type = ender_item_attr_type_get(i);
+	switch (ender_item_type_get(type))
+	{
+		case ENDER_ITEM_TYPE_BASIC:
+		ret = ender_neko_basic_new(type, &v);
+		break;
+
+		default:
+		failure("Unsupported type");
+		break;
+	}
+	ender_item_unref(type);
+
+	return ret;
 }
 /*----------------------------------------------------------------------------*
  *                                 Structs                                    *
@@ -103,7 +354,7 @@ static value ender_neko_struct_new(void)
 {
 	Ender_Item *i;
 	Ender_Item *f;
-	Eina_List *fields;
+	Eina_List *items;
 	value v = val_this();
 	value intptr;
 	value ret;
@@ -121,12 +372,13 @@ static value ender_neko_struct_new(void)
 	ret = ender_neko_obj_new(ender_item_ref(i), o);
 
 	/* iterate over the fields */
-	fields = ender_item_struct_fields_get(i);
-	EINA_LIST_FREE(fields, f)
+	items = ender_item_struct_fields_get(i);
+	EINA_LIST_FREE(items, f)
 	{
 		Ender_Item *type;
 		value getter;
 		value setter;
+		
 		char *set_name;
 		char *get_name;
 
@@ -138,23 +390,38 @@ static value ender_neko_struct_new(void)
 		if (asprintf(&get_name, "get_%s", ender_item_name_get(f)) < 0)
 			break;
 
-		setter = alloc_function(ender_neko_attr_set, VAR_ARGS, "ener_neko_attr_set");
-		//ender_neko_item_initialize(setter, ender_item_ref(f));
-		getter = alloc_function(ender_neko_attr_get, VAR_ARGS, "ener_neko_attr_get");
-		//ender_neko_item_initialize(getter, ender_item_ref(f));
+		setter = alloc_function(ender_neko_attr_set, VAR_ARGS, set_name);
+		intptr = ender_neko_item_new(ender_item_ref(f));
+		((vfunction *)setter)->env = intptr;
+
+		getter = alloc_function(ender_neko_attr_get, VAR_ARGS, get_name);
+		intptr = ender_neko_item_new(ender_item_ref(f));
+		((vfunction *)getter)->env = intptr;
+
 		alloc_field(ret, val_id(get_name), getter);
 		alloc_field(ret, val_id(set_name), setter);
 		ender_item_unref(f);
 	}
-	/* TODO iterate over the functions */
+	/* iterate over the functions */
+	items = ender_item_struct_functions_get(i);
+	EINA_LIST_FREE(items, f)
+	{
+		value function;
+
+		/* TODO only add the method functions */
+		function = alloc_function(ender_neko_method_call, VAR_ARGS,
+				ender_item_name_get(f));
+		intptr = ender_neko_item_new(ender_item_ref(f));
+		((vfunction *)function)->env = intptr;
+		alloc_field(ret, val_id(ender_item_name_get(f)), function);
+		ender_item_unref(f);
+	}
 	return ret;
 }
 
 static value ender_neko_struct_generate_class(Ender_Item *i)
 {
-	Eina_List *items;
 	value ret;
-	value intptr;
 	value f;
 
 	ret = alloc_object(NULL);
@@ -167,6 +434,122 @@ static value ender_neko_struct_generate_class(Ender_Item *i)
 	return ret;	
 }
 /*----------------------------------------------------------------------------*
+ *                                Objects                                     *
+ *----------------------------------------------------------------------------*/
+static value ender_neko_object_generate_class(Ender_Item *i)
+{
+	value ret;
+	value intptr;
+
+	ret = alloc_object(NULL);
+	ender_neko_item_initialize(ret, i);
+
+	return ret;	
+}
+/*----------------------------------------------------------------------------*
+ *                               Namespaces                                   *
+ *----------------------------------------------------------------------------*/
+static value ender_neko_namespace_generate_class(const char *name, Ender_Item *i, value rel)
+{
+	value ret = val_null;
+
+	/* TODO it might be possible that the object to create already exists */
+	/* finally generate the value */
+	printf("Creating item class of rname = %s\n", name);
+	switch (ender_item_type_get(i))
+	{
+		case ENDER_ITEM_TYPE_STRUCT:
+		ret = ender_neko_struct_generate_class(ender_item_ref(i));
+		alloc_field(rel, val_id(name), ret);
+		break;
+
+		case ENDER_ITEM_TYPE_OBJECT:
+		ret = ender_neko_object_generate_class(ender_item_ref(i));
+		alloc_field(rel, val_id(name), ret);
+		break;
+
+		default:
+		printf("Unsupported type\n");
+		break;
+	}
+	ender_item_unref(i);
+
+	return ret;
+}
+
+/* for cases like foo.bar.s, we need to create intermediary empty objects */
+static void ender_neko_namespace_generate(const Ender_Lib *lib, Ender_Item *i, value rel)
+{
+	value ret;
+	value tmp;
+	const char *orig;
+	char *name, *token, *str, *current, *rname = NULL, *saveptr = NULL;
+	int j;
+
+	orig = ender_item_name_get(i);
+	name = strdup(orig);
+	rname = name;
+	current = calloc(strlen(name) + 1, 1);
+	
+	for (j = 0, str = name; ; j++, str = NULL)
+	{
+		token = strtok_r(str, ".", &saveptr);
+		if (!token)
+			break;
+		rname = token;
+		/* first time, in case the first prefix is different
+		 * from the main lib name add a new namespace
+		 */
+		if (!j && !strcmp(token, ender_lib_name_get(lib)))
+		{
+			strcat(current, token);
+			continue;
+		}
+		strcat(current, ".");
+		strcat(current, token);
+		/* we skip the last one */
+		if (strcmp(orig, current))
+		{
+			/* check if we have a namespace already */
+			tmp = val_field(rel, val_id(rname));
+			if (val_is_null(tmp))
+			{
+				Ender_Item *other;
+
+				other = ender_lib_item_find(lib, current);
+				if (!other)
+				{
+					printf("TODO create intermediary namespaces %s %s\n", current, token);
+				}
+				else
+				{
+					printf("creating intermediary class %s\n", rname);
+					rel = ender_neko_namespace_generate_class(rname, other, rel);
+				}
+			}
+			else
+			{
+				/* all the fields must be relative to this object */
+				rel = tmp;
+			}
+		}
+	}
+	/* check that the object does not exist already */
+	tmp = val_field(rel, val_id(rname));
+	if (val_is_null(tmp))
+	{
+		ender_neko_namespace_generate_class(rname, i, rel);
+	}
+	else
+	{
+		printf("Object already existed\n");
+	}
+	
+	free(current);
+	free(name);
+}
+
+/*----------------------------------------------------------------------------*
  *                               Primitives                                   *
  *----------------------------------------------------------------------------*/
 static value load(value api)
@@ -176,7 +559,7 @@ static value load(value api)
 	Eina_List *items;
 	value ret;
 	value intptr;
-	value ns;
+	value rel;
 
 	if (!val_is_string(api))
 		return val_null;
@@ -185,55 +568,16 @@ static value load(value api)
 		return val_null;
 
 	/* create a lib object */
-	ret = alloc_object(NULL);
+	ret = rel = alloc_object(NULL);
 	intptr = alloc_abstract(k_lib, (void *)lib);
 	alloc_field(ret, val_id("__intptr"), intptr);
 
 	/* create all the possible objects,structs,enums as classes */
-	/* for cases like foo.bar.s, we need to create intermediary empty objects */
 	items = ender_lib_item_list(lib, ENDER_ITEM_TYPE_STRUCT);
+	items = eina_list_merge(items, ender_lib_item_list(lib, ENDER_ITEM_TYPE_OBJECT));
 	EINA_LIST_FREE(items, i)
 	{
-		value s;
-		const char *orig;
-		char *name, *token, *str, *current, *rname = NULL, *saveptr = NULL;
-		int j;
-
-		orig = ender_item_name_get(i);
-		name = strdup(orig);
-		rname = name;
-		current = calloc(strlen(name), 1);
-		
-		for (j = 0, str = name; ; j++, str = NULL)
-		{
-			token = strtok_r(str, ".", &saveptr);
-			if (!token)
-				break;
-			rname = token;
-			/* first time, in case the first prefix is different
-			 * from the main lib name add a new namespace
-			 */
-			if (!j && !strcmp(token, ender_lib_name_get(lib)))
-			{
-				strcat(current, token);
-				continue;
-			}
-			strcat(current, ".");
-			strcat(current, token);
-			/* we skip the last one */
-			if (strcmp(orig, current))
-			{
-				printf("TODO create intermediary namespaces %s\n", current);
-			}
-		}
-		/* finally generate the value */
-		s = ender_neko_struct_generate_class(ender_item_ref(i));
-		alloc_field(ret, val_id(rname), s);
-		ender_item_unref(i);
-
-		free(current);
-		free(name);
-
+		ender_neko_namespace_generate(lib, i, rel);
 	}
 	return ret;
 }
@@ -252,246 +596,3 @@ void ender_neko_init(void)
 	kind_share(&k_lib, "ender_lib");
 	ender_init();
 }
-
-#if 0
-/*============================================================================*
- *                                  Local                                     *
- *============================================================================*/
-static void _add_properties(Ender_Property *prop, void *data)
-{
-	value getter;
-	value setter;
-	value element;
-
-	element = data;
-	//getter = alloc_function(point_to_string,0,"point_to_string")
-	//setter = alloc_function(point_to_string,0,"point_to_string")
-	printf("adding property %s\n", ender_property_name_get(prop));
-}
-
-static Ender_Element *  _validate_element(value element)
-{
-	Ender_Element *e;
-	value intptr;
-
-	if (!val_is_object(element))
-		return NULL;
-	intptr = val_field(element, val_id("__intptr")); 
-	val_check_kind(intptr, k_element);
-	e = val_data(intptr);
-
-	return e;
-}
-
-static value value_get(value name)
-{
-	value element;
-	value ret = val_false;
-	Ender_Property *prop;
-	Ender_Element *e;
-	char *c_name;
-
-	element = val_this();
-	e = _validate_element(element);
-	if (!e)
-		return val_null;
-	if (!val_is_string(name))
-		return val_null;
-
-	c_name = val_string(name);
-	prop = ender_element_property_get(e, c_name);
-	printf("trying to get a property from %p\n", prop);
-	switch (ender_property_type_get(prop))
-	{
-		case ENDER_INT32:
-		case ENDER_UINT32:
-		{
-			uint32_t v;
-
-			ender_element_value_get(e, c_name, &v, NULL);
-			printf("value is %d\n", v);
-			ret = alloc_int(v);
-		}
-
-		break;
-		case ENDER_DOUBLE:
-		{
-			double v;
-
-			ender_element_value_get(e, c_name, &v, NULL);
-			printf("value is %g\n", v);
-			ret = alloc_float((float)v);
-		}
-		case ENDER_COLOR:
-		break;
-
-		default:
-		printf("value not supported\n");
-		break;
-	}
-	return ret;
-}
-
-static value value_set(value name, value v)
-{
-	value element;
-	Ender_Element *e;
-	Ender_Value *c_value;
-	char *c_name;
-
-	element = val_this();
-	e = _validate_element(element);
-	if (!e)
-		return val_false;
-
-	if (!val_is_string(name))
-		return val_false;
-	c_name = val_string(name);
-	switch (val_type(v))
-	{
-		case VAL_NULL:
-		return val_false;
-		break;
-
-		case VAL_INT:
-		c_value = ender_value_basic_new(ENDER_INT32);
-		ender_value_int32_set(c_value, val_int(v));
-		break;
-
-		case VAL_STRING:
-		c_value = ender_value_basic_new(ENDER_STRING);
-		ender_value_string_set(c_value, val_string(v));
-		break;
-
-		case VAL_OBJECT:
-		break;
-	}
-	ender_element_value_set_simple(e, c_name, c_value);
-	ender_value_free(c_value);
-
-	return val_true;
-}
-
-static value element_initialize(value intptr)
-{
-	Ender_Element *e;
-	value ret;
-	value gen_setter;
-	value gen_getter;
-
-	val_check_kind(intptr, k_element);
-	e = val_data(intptr);
-	/* define the object */
-	ret = alloc_object(NULL);
-	alloc_field(ret, val_id("__intptr"), intptr);
-	/* add common ender functions */
-	gen_getter = alloc_function(value_get, 1, "value_get");
-	alloc_field(ret, val_id("get"), gen_getter);
-	/* get all the properties */
-	ender_element_property_list(e, _add_properties, ret);
-	gen_setter = alloc_function(value_set, 2, "value_set");
-	alloc_field(ret, val_id("set"), gen_setter);
-
-	return ret;
-}
-/*----------------------------------------------------------------------------*
- *                  The Neko FFI C interface functions                        *
- *----------------------------------------------------------------------------*/
-static void element_delete(value v)
-{
-	Ender_Element *e;
-
-	e = val_data(v);
-	ender_element_delete(e);
-}
-
-static value element_new(value name)
-{
-	Ender_Element *e;
-	value intptr;
-	value ret;
-
-	if (!val_is_string(name))
-		return val_null;
-
-	e = ender_element_new(val_string(name));
-	if (!e) return val_null;
-
-	intptr = alloc_abstract(k_element, e);
-	ret = element_initialize(intptr);
-	val_gc(intptr, element_delete);
-
-	return ret;
-}
-
-static value element_name_get(value element)
-{
-	Ender_Element *e;
-	value ret;
-	const char *name;
-
-	val_check_kind(element, k_element);
-	e = val_data(element);
-	name = ender_element_name_get(e);
-	ret = alloc_string(name);
-
-	return ret;
-}
-
-static value element_value_get(value element, value name)
-{
-	Ender_Element *e;
-	char *c_name;
-
-	val_check_kind(element, k_element);
-	if (!val_is_string(name))
-		return val_null;
-
-	c_name = val_string(name);
-}
-
-static value element_value_add(value element, value name, value v)
-{
-	Ender_Element *e;
-	char *c_name;
-
-	val_check_kind(element, k_element);
-	if (!val_is_string(name))
-		return val_false;
-
-	/* TOOD */
-	return val_false;
-}
-
-static value element_value_remove(value element, value name, value v)
-{
-	Ender_Element *e;
-	char *c_name;
-
-	val_check_kind(element, k_element);
-	if (!val_is_string(name))
-		return val_false;
-
-	/* TODO */
-	return val_false;
-}
-
-static value element_value_clear(value element, value name)
-{
-	Ender_Element *e;
-	char *c_name;
-
-	val_check_kind(element, k_element);
-	if (!val_is_string(name))
-		return val_null;
-
-	c_name = val_string(name);
-	ender_element_value_clear(e, c_name);
-}
-
-DEFINE_PRIM(element_new, 1);
-DEFINE_PRIM(element_initialize, 1);
-DEFINE_PRIM(element_value_add, 3);
-DEFINE_PRIM(element_value_remove, 3);
-DEFINE_PRIM(element_value_clear, 2);
-#endif

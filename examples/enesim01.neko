@@ -3,7 +3,12 @@
 
 var load = $loader.loadprim("ender@load", 1);
 var enesim = load("enesim");
+
+var r = enesim.renderer.rectangle.new();
 var m = enesim.matrix.new();
 var r = enesim.rectangle.new();
 
 m.set_xx(10);
+m.identity();
+m.scale(10, 10);
+$print("Getting xx: ",m.get_xx(),"\n");
