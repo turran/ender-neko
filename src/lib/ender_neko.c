@@ -25,6 +25,10 @@
  * create this macro given that the vm struct is not exported on neko
  */
 #define NEKOVM_ENV(v) *((value *)((char *)(v) + sizeof(void *) + sizeof(void *)))
+
+/* TODO Add a helper macro to get the item related to a function call */
+/* TODO Add a helper macro to set the item related to a function call */
+
 typedef struct _Ender_Neko_Object
 {
 	/* the item associated with the data */
@@ -203,32 +207,74 @@ static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value va
 /*----------------------------------------------------------------------------*
  *                               Functions                                    *
  *----------------------------------------------------------------------------*/
-static value ender_neko_method_call(value *args, int nargs)
+static value ender_neko_function_call(Ender_Item *i, Ender_Neko_Object *obj,
+		value *args, int nargs)
 {
-	Ender_Neko_Object *obj;
-	Ender_Item *i;
 	Ender_Item *type;
 	Ender_Item *a;
 	Ender_Value *passed_args;
 	Eina_List *info_args;
-	Eina_Bool valid;
-	value intptr;
-	value self;
 	int nnargs;
 	int arg = 0;
 	int neko_arg = 0;
+	int flags;
+
+	/* check the number of arguments */
+	nnargs = ender_item_function_args_count(i);
+	flags = ender_item_function_flags_get(i);
+
+	/* we increment by one nargs because for methods the first argument
+	 * is the object itself
+	 */
+	if (flags & ENDER_ITEM_FUNCTION_FLAG_IS_METHOD)
+	{
+		/* we must have a self */
+		if (!obj)
+			failure("Wrong self object");
+		nargs++;
+	}
+
+	if (nnargs != nargs)
+		failure("Invalid number of arguments");
+
+
+	/* setup the args */
+	if (nnargs)
+	{
+		passed_args = calloc(nnargs, sizeof(Ender_Value));
+
+		/* set the args */
+		info_args = ender_item_function_args_get(i);
+		/* set self */
+		passed_args[arg].ptr = obj->o;
+		arg++;
+		ender_item_unref(info_args->data);
+		info_args = eina_list_remove_list(info_args, info_args);
+
+		EINA_LIST_FREE(info_args, a)
+		{
+			ender_neko_arg_from_val(a, &passed_args[arg], args[neko_arg]);
+			neko_arg++;
+			arg++;
+			ender_item_unref(a);
+		}
+		ender_item_function_call(i, passed_args);
+		free(passed_args);
+	}
+	/* TODO handle the return value */
+	return val_true;
+}
+
+static value ender_neko_method_call(value *args, int nargs)
+{
+	Ender_Neko_Object *obj;
+	Ender_Item *i;
+	value intptr;
+	value self;
 	
 	/* get our function environment */
 	intptr = NEKOVM_ENV(neko_vm_current());
 	i = val_data(intptr);
-
-	/* check the number of arguments */
-	nnargs = ender_item_function_args_count(i);
-	/* we increment by one nargs because for methods the first argument
-	 * is the object itself
-	 */
-	if (nnargs != nargs)
-		failure("Invalid number of arguments");
 
 	/* check that we have a valid object */
 	self = val_this();
@@ -236,26 +282,7 @@ static value ender_neko_method_call(value *args, int nargs)
 	val_check_kind(intptr, k_obj);
 	obj = val_data(intptr);
 
-	/* setup the args, plus one because of the self arg */
-	passed_args = calloc(nnargs + 1, sizeof(Ender_Value));
-
-	/* set self */
-	passed_args[arg].ptr = obj->o;
-	arg++;
-
-	/* set the args */
-	info_args = ender_item_function_args_get(i);
-	EINA_LIST_FREE(info_args, a)
-	{
-		ender_neko_arg_from_val(a, &passed_args[arg], args[neko_arg]);
-		neko_arg++;
-		arg++;
-		ender_item_unref(a);
-	}
-	ender_item_function_call(i, passed_args);
-	free(passed_args);
-
-	return val_true;
+	return ender_neko_function_call(i, obj, args, nargs);
 }
 /*----------------------------------------------------------------------------*
  *                                  Attrs                                      *
@@ -408,7 +435,12 @@ static value ender_neko_struct_new(void)
 	{
 		value function;
 
-		/* TODO only add the method functions */
+		/* only add the method functions */
+		if (!(ender_item_function_flags_get(f) & ENDER_ITEM_FUNCTION_FLAG_IS_METHOD))
+		{
+			ender_item_unref(f);
+			continue;
+		}
 		function = alloc_function(ender_neko_method_call, VAR_ARGS,
 				ender_item_name_get(f));
 		intptr = ender_neko_item_new(ender_item_ref(f));
@@ -436,13 +468,77 @@ static value ender_neko_struct_generate_class(Ender_Item *i)
 /*----------------------------------------------------------------------------*
  *                                Objects                                     *
  *----------------------------------------------------------------------------*/
+static value ender_neko_object_new(value *args, int nargs)
+{
+	Ender_Item *i;
+	Ender_Item *item;
+	Eina_List *items;
+	value intptr;
+	value self;
+	value ret = val_null;
+
+	/* get the class that invokd new() */
+	intptr = val_field(val_this(), val_id("__intptr")); 
+	val_check_kind(intptr, k_item);
+	i = val_data(intptr);
+
+	/* TODO find the ctor that matches the type of args */
+	items = ender_item_object_ctor_get(i);
+	EINA_LIST_FREE(items, item)
+	{
+		int nnargs;
+
+		nnargs = ender_item_function_args_count(item);
+		if (nargs != nnargs)
+		{
+			ender_item_unref(item);
+			continue;
+		}
+		/* so far we have the same number of arguments */
+		ret = ender_neko_function_call(item, NULL, args, nargs);
+		ender_item_unref(item);
+	}
+
+	if (ret == val_null)
+	{
+		failure("Impossible to find a constructor, check your args");
+	}
+
+	return val_null;
+}
+
 static value ender_neko_object_generate_class(Ender_Item *i)
 {
+	Eina_List *items;
+	Ender_Item *item;
+	Eina_Bool has_ctor = EINA_FALSE;
 	value ret;
-	value intptr;
 
 	ret = alloc_object(NULL);
 	ender_neko_item_initialize(ret, i);
+
+	/* ctor */
+	items = ender_item_object_functions_get(i);
+	EINA_LIST_FREE(items, item)
+	{
+		int mask;
+
+		mask = ender_item_function_flags_get(item);
+		if (mask & ENDER_ITEM_FUNCTION_FLAG_IS_METHOD)
+		{
+			ender_item_unref(item);
+			continue;
+		}
+		/* only register once the ctor */
+		if ((mask & ENDER_ITEM_FUNCTION_FLAG_CTOR) && (!has_ctor))
+		{
+			value f;
+
+			f = alloc_function(ender_neko_object_new, VAR_ARGS, "new");
+			alloc_field(ret, val_id("new"), f);
+		}
+		ender_item_unref(item);
+	}
 
 	return ret;	
 }
@@ -455,7 +551,6 @@ static value ender_neko_namespace_generate_class(const char *name, Ender_Item *i
 
 	/* TODO it might be possible that the object to create already exists */
 	/* finally generate the value */
-	printf("Creating item class of rname = %s\n", name);
 	switch (ender_item_type_get(i))
 	{
 		case ENDER_ITEM_TYPE_STRUCT:
@@ -523,7 +618,6 @@ static void ender_neko_namespace_generate(const Ender_Lib *lib, Ender_Item *i, v
 				}
 				else
 				{
-					printf("creating intermediary class %s\n", rname);
 					rel = ender_neko_namespace_generate_class(rname, other, rel);
 				}
 			}
@@ -540,11 +634,7 @@ static void ender_neko_namespace_generate(const Ender_Lib *lib, Ender_Item *i, v
 	{
 		ender_neko_namespace_generate_class(rname, i, rel);
 	}
-	else
-	{
-		printf("Object already existed\n");
-	}
-	
+
 	free(current);
 	free(name);
 }
