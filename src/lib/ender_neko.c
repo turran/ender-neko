@@ -29,6 +29,12 @@
 /* TODO Add a helper macro to get the item related to a function call */
 /* TODO Add a helper macro to set the item related to a function call */
 
+#define ERR(...) EINA_LOG_DOM_ERR(_log, __VA_ARGS__)
+#define WRN(...) EINA_LOG_DOM_WARN(_log, __VA_ARGS__)
+#define INF(...) EINA_LOG_DOM_INFO(_log, __VA_ARGS__)
+#define DBG(...) EINA_LOG_DOM_DBG(_log, __VA_ARGS__)
+#define CRI(...) EINA_LOG_DOM_CRIT(_log, __VA_ARGS__)
+
 typedef struct _Ender_Neko_Object
 {
 	/* the item associated with the data */
@@ -41,6 +47,11 @@ DEFINE_KIND(k_obj);
 DEFINE_KIND(k_item);
 DEFINE_KIND(k_lib);
 DEFINE_ENTRY_POINT(ender_neko_init)
+
+static int _log = -1;
+
+/* Forward declarations */
+static value ender_neko_object_new(Ender_Item *i, void *o);
 
 /*----------------------------------------------------------------------------*
  *                            Ender Neko objects                              *
@@ -62,7 +73,7 @@ static value ender_neko_obj_new(Ender_Item *i, void *o)
 	value ret;
 
 	no = calloc(1, sizeof(Ender_Neko_Object));
-	no->i = ender_item_ref(i);
+	no->i = i;
 	no->o = o;
 
 	intptr = alloc_abstract(k_obj, no);
@@ -169,6 +180,35 @@ static Eina_Bool ender_neko_basic_from_val(Ender_Item *i, Ender_Value *v, value 
 	}
 	return EINA_TRUE;
 }
+
+static Eina_Bool ender_neko_basic_to_val(Ender_Item *i, Ender_Value *v, value *val)
+{
+	switch (ender_item_basic_value_type_get(i))
+	{
+		case ENDER_VALUE_TYPE_DOUBLE:
+		{
+			switch (val_type(val))
+			{
+				case VAL_INT:
+				*val = alloc_int(v->i32);
+				break;
+
+				case VAL_FLOAT:
+				*val = alloc_float(v->d);
+				break;
+
+				default:
+				failure("Unsupported neko value");
+				break;
+			}
+		}
+		break;
+
+		default:
+		failure("Unsupported value type");
+	}
+	return EINA_TRUE;
+}
 /*----------------------------------------------------------------------------*
  *                                  Arg                                       *
  *----------------------------------------------------------------------------*/
@@ -204,16 +244,55 @@ static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value va
 	ender_item_unref(type);
 	return ret;
 }
+
+static Eina_Bool ender_neko_arg_to_val(Ender_Item *i, Ender_Value *v, Eina_Bool is_ret, value *val)
+{
+	Ender_Item *type;
+	Ender_Item_Arg_Direction dir;
+	Eina_Bool ret = EINA_FALSE;
+
+	type = ender_item_arg_type_get(i);
+	dir = ender_item_arg_direction_get(i);
+
+	/* TODO handle the transfer */
+	/* handle the in/out direction */
+	if (dir == ENDER_ITEM_ARG_DIRECTION_IN)
+	{
+		switch (ender_item_type_get(type))
+		{
+			case ENDER_ITEM_TYPE_BASIC:
+			ret = ender_neko_basic_to_val(type, v, val);
+			break;
+
+			case ENDER_ITEM_TYPE_OBJECT:
+			*val = ender_neko_object_new(ender_item_ref(type), v->ptr);
+			break;
+
+			default:
+			failure("Unsupported ender value");
+			break;
+		}
+	}
+	else
+	{
+
+	}
+	ender_item_unref(type);
+	return ret;
+}
 /*----------------------------------------------------------------------------*
  *                               Functions                                    *
  *----------------------------------------------------------------------------*/
-static value ender_neko_function_call(Ender_Item *i, Ender_Neko_Object *obj,
+static value ender_neko_function_object_call(Ender_Item *i, Ender_Neko_Object *obj,
 		value *args, int nargs)
 {
 	Ender_Item *type;
 	Ender_Item *a;
+	Ender_Item *i_ret;
+	Ender_Value ret_val;
 	Ender_Value *passed_args = NULL;
 	Eina_List *info_args;
+	value ret = val_true;
 	int nnargs;
 	int arg = 0;
 	int neko_arg = 0;
@@ -259,31 +338,55 @@ static value ender_neko_function_call(Ender_Item *i, Ender_Neko_Object *obj,
 			ender_item_unref(a);
 		}
 	}
-	ender_item_function_call(i, passed_args);
+	ender_item_function_call(i, passed_args, &ret_val);
+	i_ret = ender_item_function_ret_get(i);
+	if (i_ret)
+	{
+		ender_neko_arg_to_val(i_ret, &ret_val, EINA_TRUE, &ret);
+		ender_item_unref(i_ret);
+	}
 	free(passed_args);
 
-	/* TODO handle the return value */
-	return val_true;
+	return ret;
 }
 
-static value ender_neko_method_call(value *args, int nargs)
+static value ender_neko_function_call(value *args, int nargs)
 {
-	Ender_Neko_Object *obj;
+	Ender_Neko_Object *obj = NULL;
 	Ender_Item *i;
 	value intptr;
-	value self;
-	
+	int flags;
+
 	/* get our function environment */
 	intptr = NEKOVM_ENV(neko_vm_current());
 	i = val_data(intptr);
 
-	/* check that we have a valid object */
-	self = val_this();
-	intptr = val_field(self, val_id("__intptr")); 
-	val_check_kind(intptr, k_obj);
-	obj = val_data(intptr);
+	flags = ender_item_function_flags_get(i);
+	if (flags & ENDER_ITEM_FUNCTION_FLAG_IS_METHOD)
+	{
+		value self;
 
-	return ender_neko_function_call(i, obj, args, nargs);
+		/* check that we have a valid object */
+		self = val_this();
+		intptr = val_field(self, val_id("__intptr")); 
+		val_check_kind(intptr, k_obj);
+		obj = val_data(intptr);
+	}
+
+	return ender_neko_function_object_call(i, obj, args, nargs);
+}
+
+static value ender_neko_function_new(Ender_Item *f)
+{
+	value ret;
+	value intptr;
+
+	ret = alloc_function(ender_neko_function_call, VAR_ARGS,
+			ender_item_name_get(f));
+	intptr = ender_neko_item_new(f);
+	((vfunction *)ret)->env = intptr;
+
+	return ret;
 }
 /*----------------------------------------------------------------------------*
  *                                  Attrs                                      *
@@ -442,10 +545,7 @@ static value ender_neko_struct_new(void)
 			ender_item_unref(f);
 			continue;
 		}
-		function = alloc_function(ender_neko_method_call, VAR_ARGS,
-				ender_item_name_get(f));
-		intptr = ender_neko_item_new(ender_item_ref(f));
-		((vfunction *)function)->env = intptr;
+		function = ender_neko_function_new(ender_item_ref(f));
 		alloc_field(ret, val_id(ender_item_name_get(f)), function);
 		ender_item_unref(f);
 	}
@@ -469,7 +569,16 @@ static value ender_neko_struct_generate_class(Ender_Item *i)
 /*----------------------------------------------------------------------------*
  *                                Objects                                     *
  *----------------------------------------------------------------------------*/
-static value ender_neko_object_new(value *args, int nargs)
+static value ender_neko_object_new(Ender_Item *i, void *o)
+{
+	value ret;
+
+	ret = ender_neko_obj_new(i, o);
+	/* TODO set the proto */
+	return ret;
+}
+
+static value ender_neko_object_ctor(value *args, int nargs)
 {
 	Ender_Item *i;
 	Ender_Item *item;
@@ -496,7 +605,7 @@ static value ender_neko_object_new(value *args, int nargs)
 			continue;
 		}
 		/* so far we have the same number of arguments */
-		ret = ender_neko_function_call(item, NULL, args, nargs);
+		ret = ender_neko_function_object_call(item, NULL, args, nargs);
 		ender_item_unref(item);
 	}
 
@@ -530,13 +639,24 @@ static value ender_neko_object_generate_class(Ender_Item *i)
 			ender_item_unref(item);
 			continue;
 		}
-		/* only register once the ctor */
-		if ((mask & ENDER_ITEM_FUNCTION_FLAG_CTOR) && (!has_ctor))
+		/* the ctor is a special case given that we need
+		 * to find the best ctor function
+		 */
+		if (mask & ENDER_ITEM_FUNCTION_FLAG_CTOR)
 		{
-			value f;
+			/* only register once the ctor */
+			if (!has_ctor)
+			{
+				value f;
 
-			f = alloc_function(ender_neko_object_new, VAR_ARGS, "new");
-			alloc_field(ret, val_id("new"), f);
+				f = alloc_function(ender_neko_object_ctor, VAR_ARGS, "new");
+				alloc_field(ret, val_id("new"), f);
+				has_ctor = EINA_TRUE;
+			}
+		}
+		else
+		{
+
 		}
 		ender_item_unref(item);
 	}
@@ -561,6 +681,11 @@ static value ender_neko_namespace_generate_class(const char *name, Ender_Item *i
 
 		case ENDER_ITEM_TYPE_OBJECT:
 		ret = ender_neko_object_generate_class(ender_item_ref(i));
+		alloc_field(rel, val_id(name), ret);
+		break;
+
+		case ENDER_ITEM_TYPE_FUNCTION:
+		ret = ender_neko_function_new(ender_item_ref(i));
 		alloc_field(rel, val_id(name), ret);
 		break;
 
@@ -666,10 +791,12 @@ static value load(value api)
 	/* create all the possible objects,structs,enums as classes */
 	items = ender_lib_item_list(lib, ENDER_ITEM_TYPE_STRUCT);
 	items = eina_list_merge(items, ender_lib_item_list(lib, ENDER_ITEM_TYPE_OBJECT));
+	items = eina_list_merge(items, ender_lib_item_list(lib, ENDER_ITEM_TYPE_FUNCTION));
 	EINA_LIST_FREE(items, i)
 	{
 		ender_neko_namespace_generate(lib, i, rel);
 	}
+
 	return ret;
 }
 
@@ -682,6 +809,9 @@ DEFINE_PRIM(load, 1);
  *----------------------------------------------------------------------------*/
 void ender_neko_init(void)
 {
+	eina_init();
+	_log = eina_log_domain_register("ender-neko", NULL);
+
 	kind_share(&k_obj, "ender_neko_object");
 	kind_share(&k_item, "ender_item");
 	kind_share(&k_lib, "ender_lib");
