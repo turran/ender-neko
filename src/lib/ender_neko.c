@@ -212,7 +212,7 @@ static value ender_neko_function_call(Ender_Item *i, Ender_Neko_Object *obj,
 {
 	Ender_Item *type;
 	Ender_Item *a;
-	Ender_Value *passed_args;
+	Ender_Value *passed_args = NULL;
 	Eina_List *info_args;
 	int nnargs;
 	int arg = 0;
@@ -258,9 +258,10 @@ static value ender_neko_function_call(Ender_Item *i, Ender_Neko_Object *obj,
 			arg++;
 			ender_item_unref(a);
 		}
-		ender_item_function_call(i, passed_args);
-		free(passed_args);
 	}
+	ender_item_function_call(i, passed_args);
+	free(passed_args);
+
 	/* TODO handle the return value */
 	return val_true;
 }
