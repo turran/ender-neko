@@ -6,10 +6,5 @@ var enesim = load("enesim");
 
 enesim.init()
 var r = enesim.renderer.rectangle.new();
-var m = enesim.matrix.new();
-var r = enesim.rectangle.new();
-
-m.set_xx(10);
-m.identity();
-m.scale(45, 30);
-$print("Getting xx: ", m.get_xx(),"\n");
+var s = enesim.surface.new(enesim.format.ARGB8888, 320, 240);
+r.draw(s, enesim.rop.FILL, null, 0, 0, null); 
