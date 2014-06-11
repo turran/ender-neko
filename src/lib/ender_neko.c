@@ -304,15 +304,17 @@ static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value va
 			case ENDER_ITEM_TYPE_OBJECT:
 			case ENDER_ITEM_TYPE_STRUCT:
 			{
-				Ender_Neko_Object *obj;
-				value intptr;
-
-				intptr = val_field(val, val_id("__intptr"));
-				if (val_is_kind(intptr, k_obj))
+				if (val_is_object(val))
 				{
-					obj = val_data(intptr);
-					v->ptr = obj->o;
-					ret = EINA_TRUE;
+					value intptr;
+					intptr = val_field(val, val_id("__intptr"));
+					if (val_is_kind(intptr, k_obj))
+					{
+						Ender_Neko_Object *obj;
+						obj = val_data(intptr);
+						v->ptr = obj->o;
+						ret = EINA_TRUE;
+					}
 				}
 				else if (val_is_null(val))
 				{

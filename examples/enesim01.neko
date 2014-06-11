@@ -7,4 +7,5 @@ var enesim = load("enesim");
 enesim.init()
 var r = enesim.renderer.rectangle.new();
 var s = enesim.surface.new(enesim.format.ARGB8888, 320, 240);
-r.draw(s, enesim.rop.FILL, null, 0, 0, null); 
+r.draw(s, enesim.rop.FILL, null, 0, 0, null);
+enesim.image.file.save("out.png", s.get_buffer(), null); 
