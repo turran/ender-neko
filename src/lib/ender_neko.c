@@ -85,11 +85,29 @@ static void ender_neko_obj_finalize(value v)
 	free(no);
 }
 
+static value ender_neko_obj_to_string(void)
+{
+	Ender_Neko_Object *no;
+	value o;
+	value ret;
+	value intptr;
+	buffer b;
+
+	o = val_this();
+	intptr = val_field(o, val_id("__intptr")); 
+	val_check_kind(intptr, k_obj);
+	no = val_data(intptr);
+	b = alloc_buffer(ender_item_name_get(no->i));
+
+	return buffer_to_string(b);
+}
+
 static value ender_neko_obj_new(Ender_Item *i, void *o)
 {
 	Ender_Neko_Object *no;
 	value intptr;
 	value ret;
+	value f;
 
 	no = calloc(1, sizeof(Ender_Neko_Object));
 	no->i = i;
@@ -101,6 +119,11 @@ static value ender_neko_obj_new(Ender_Item *i, void *o)
 	ret = alloc_object(NULL);
 	alloc_field(ret, val_id("__intptr"), intptr);
 
+	/* set the to_string function */
+	f = alloc_function(ender_neko_obj_to_string, 0, "ender_neko_obj_to_string");
+	alloc_field(ret, val_id("__string"), f);
+
+	DBG("New object for item '%s'", ender_item_name_get(i));
 	return ret;
 }
 
@@ -124,12 +147,34 @@ static value ender_neko_item_new(Ender_Item *i)
 	return ret;
 }
 
+static value ender_neko_item_to_string(void)
+{
+	Ender_Item *i;
+	value o;
+	value ret;
+	value intptr;
+	buffer b;
+
+	o = val_this();
+	intptr = val_field(o, val_id("__intptr")); 
+	val_check_kind(intptr, k_item);
+	i = val_data(intptr);
+	b = alloc_buffer(ender_item_name_get(i));
+
+	return buffer_to_string(b);
+}
+
 static void ender_neko_item_initialize(value v, Ender_Item *i)
 {
 	value intptr;
+	value f;
 
 	intptr = ender_neko_item_new(i);
+	/* set the abstract */
 	alloc_field(v, val_id("__intptr"), intptr);
+	/* set the to_string function */
+	f = alloc_function(ender_neko_item_to_string, 0, "ender_neko_item_to_string");
+	alloc_field(v, val_id("__string"), f);
 }
 
 /*----------------------------------------------------------------------------*
@@ -235,27 +280,31 @@ static Eina_Bool ender_neko_basic_from_val(Ender_Item *i, Ender_Value *v, value 
 		}
 		break;
 
-		default:
-		failure("Unsupported value type");
-		break;
-	}
-	return EINA_TRUE;
-}
-
-static Eina_Bool ender_neko_basic_to_val(Ender_Item *i, Ender_Value *v, value *val)
-{
-	switch (ender_item_basic_value_type_get(i))
-	{
-		case ENDER_VALUE_TYPE_DOUBLE:
+		case ENDER_VALUE_TYPE_POINTER:
 		{
 			switch (val_type(val))
 			{
-				case VAL_INT:
-				*val = alloc_int(v->i32);
+				case VAL_NULL:
+				v->ptr = NULL;
 				break;
 
-				case VAL_FLOAT:
-				*val = alloc_float(v->d);
+				default:
+				failure("Unsupported neko value");
+				break;
+			}
+		}
+		break;
+
+		case ENDER_VALUE_TYPE_STRING:
+		{
+			switch (val_type(val))
+			{
+				case VAL_NULL:
+				v->ptr = NULL;
+				break;
+
+				case VAL_STRING:
+				v->ptr = val_string(val);
 				break;
 
 				default:
@@ -266,6 +315,34 @@ static Eina_Bool ender_neko_basic_to_val(Ender_Item *i, Ender_Value *v, value *v
 		break;
 
 		default:
+		CRI("Unsupported value type '%d'", vtype);
+		failure("Unsupported value type");
+		break;
+	}
+	return EINA_TRUE;
+}
+
+static Eina_Bool ender_neko_basic_to_val(Ender_Item *i, Ender_Value *v, value *val)
+{
+	Ender_Value_Type vtype;
+
+	vtype = ender_item_basic_value_type_get(i);
+	switch (vtype)
+	{
+		case ENDER_VALUE_TYPE_DOUBLE:
+		*val = alloc_float(v->d);
+		break;
+
+		case ENDER_VALUE_TYPE_INT32:
+		*val = alloc_int(v->i32);
+		break;
+
+		case ENDER_VALUE_TYPE_BOOL:
+		*val = alloc_bool(v->b);
+		break;
+
+		default:
+		CRI("Unsupported value type '%d'", vtype);
 		failure("Unsupported value type");
 	}
 	return EINA_TRUE;
@@ -282,6 +359,13 @@ static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value va
 
 	type = ender_item_arg_type_get(i);
 	dir = ender_item_arg_direction_get(i);
+
+	if (!type)
+	{
+		ERR("No type found");
+		v->ptr = NULL;
+		return EINA_FALSE;
+	}
 
 	/* TODO handle the transfer */
 	/* handle the in/out direction */
@@ -363,6 +447,7 @@ static Eina_Bool ender_neko_arg_to_val(Ender_Item *i, Ender_Value *v, Eina_Bool 
 
 			case ENDER_ITEM_TYPE_OBJECT:
 			*val = ender_neko_object_new(ender_item_ref(type), v->ptr);
+			ret = EINA_TRUE;
 			break;
 
 			default:
@@ -397,6 +482,7 @@ static value ender_neko_function_object_call(Ender_Item *i, Ender_Neko_Object *o
 	nnargs = ender_item_function_args_count(i);
 	flags = ender_item_function_flags_get(i);
 
+	DBG("Calling function '%s' with flags: '%08x', nargs: %d", ender_item_name_get(i), flags, nargs);
 	/* we increment by one nargs because for methods the first argument
 	 * is the object itself
 	 */
@@ -710,6 +796,7 @@ static value ender_neko_object_generate_proto(Ender_Item *i)
 	proto = eina_hash_find(_protos, ender_item_name_get(i));
 	if (proto) return proto;
 
+	DBG("Creating proto for '%s'", ender_item_name_get(i));
 	/* get the inheritance */
 	inherit = ender_item_object_inherit_get(i);
 	if (inherit)
@@ -746,6 +833,7 @@ static value ender_neko_object_new(Ender_Item *i, void *o)
 	value ret;
 	value proto;
 
+	DBG("Creating object for '%s'", ender_item_name_get(i));
 	ret = ender_neko_obj_new(i, o);
 	proto = ender_neko_object_generate_proto(i);
 	((vobject *)ret)->proto = (vobject *)proto;
@@ -767,6 +855,7 @@ static value ender_neko_object_ctor(value *args, int nargs)
 	val_check_kind(intptr, k_item);
 	i = val_data(intptr);
 
+	DBG("Object constructor for '%s'", ender_item_name_get(i));
 	/* TODO find the ctor that matches the type of args */
 	items = ender_item_object_ctor_get(i);
 	EINA_LIST_FREE(items, item)
@@ -780,6 +869,7 @@ static value ender_neko_object_ctor(value *args, int nargs)
 			continue;
 		}
 		/* so far we have the same number of arguments */
+		DBG("Constructor '%s' found, calling it", ender_item_name_get(item));
 		ret = ender_neko_function_object_call(item, NULL, args, nargs);
 		ender_item_unref(item);
 	}
@@ -829,9 +919,13 @@ static value ender_neko_object_generate_class(Ender_Item *i)
 				has_ctor = EINA_TRUE;
 			}
 		}
+		/* everything else, add it as a class function */
 		else
 		{
+			value f;
 
+			f = ender_neko_function_new(ender_item_ref(item));
+			alloc_field(ret, val_id(ender_item_name_get(item)), f);
 		}
 		ender_item_unref(item);
 	}

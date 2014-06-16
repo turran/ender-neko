@@ -5,7 +5,15 @@ var load = $loader.loadprim("ender@load", 1);
 var enesim = load("enesim");
 
 enesim.init()
-var r = enesim.renderer.rectangle.new();
+//var r = enesim.renderer.rectangle.new();
+var r = enesim.renderer.checker.new();
+r.width_set(50);
+r.height_set(50);
 var s = enesim.surface.new(enesim.format.ARGB8888, 320, 240);
+var b = s.buffer_get();
+
+$print("b = ", b, "\n");
+$print("r = ", r, "\n");
+$print("s = ", s, "\n");
 r.draw(s, enesim.rop.FILL, null, 0, 0, null);
-enesim.image.file.save("out.png", s.get_buffer(), null); 
+enesim.image.file.save("out.png", b,  null, null); 
