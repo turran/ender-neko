@@ -51,8 +51,10 @@ DEFINE_ENTRY_POINT(ender_neko_init)
 
 static int _log = -1;
 static Eina_Hash *_protos;
+
 /* Forward declarations */
 static value ender_neko_object_new(Ender_Item *i, void *o);
+static value ender_neko_def_new(Ender_Item *i, Ender_Value *v);
 
 
 static char * ender_neko_toupper(const char *str)
@@ -242,6 +244,36 @@ static Eina_Bool ender_neko_basic_from_val(Ender_Item *i, Ender_Value *v, value 
 		}
 		break;
 
+		case ENDER_VALUE_TYPE_INT8:
+		{
+			switch (val_type(val))
+			{
+				case VAL_INT:
+				v->i8 = val_int(val);
+				break;
+
+				default:
+				failure("Unsupported neko value");
+				break;
+			}
+		}
+		break;
+
+		case ENDER_VALUE_TYPE_UINT8:
+		{
+			switch (val_type(val))
+			{
+				case VAL_INT:
+				v->u8 = val_int(val);
+				break;
+
+				default:
+				failure("Unsupported neko value");
+				break;
+			}
+		}
+		break;
+
 		case ENDER_VALUE_TYPE_INT32:
 		{
 			switch (val_type(val))
@@ -380,6 +412,16 @@ static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value va
 			ret = ender_neko_basic_from_val(type, v, val);
 			break;
 
+			case ENDER_ITEM_TYPE_DEF:
+			{
+				Ender_Item *other;
+
+				other = ender_item_def_type_get(i);
+				ret = ender_neko_arg_from_val(other, v, val);
+				ender_item_unref(other);
+			}
+			break;
+
 			case ENDER_ITEM_TYPE_ENUM:
 			v->i32 = val_int(val);
 			ret = EINA_TRUE;
@@ -439,7 +481,10 @@ static Eina_Bool ender_neko_arg_to_val(Ender_Item *i, Ender_Value *v, Eina_Bool 
 	/* handle the in/out direction */
 	if (dir == ENDER_ITEM_ARG_DIRECTION_IN)
 	{
-		switch (ender_item_type_get(type))
+		Ender_Item_Type it;
+
+		it = ender_item_type_get(type);
+		switch (it)
 		{
 			case ENDER_ITEM_TYPE_BASIC:
 			ret = ender_neko_basic_to_val(type, v, val);
@@ -450,7 +495,13 @@ static Eina_Bool ender_neko_arg_to_val(Ender_Item *i, Ender_Value *v, Eina_Bool 
 			ret = EINA_TRUE;
 			break;
 
+			case ENDER_ITEM_TYPE_DEF:
+			*val = ender_neko_def_new(ender_item_ref(type), v);
+			ret = EINA_TRUE;
+			break;
+
 			default:
+			ERR("Type %s", ender_item_type_name_get(it));
 			failure("Unsupported ender value");
 			break;
 		}
@@ -663,6 +714,75 @@ static value ender_neko_attr_get(value *args, int nargs)
 	ender_item_unref(type);
 
 	return ret;
+}
+/*----------------------------------------------------------------------------*
+ *                                    Defs                                    *
+ *----------------------------------------------------------------------------*/
+static value ender_neko_def_new(Ender_Item *i, Ender_Value *v)
+{
+	Ender_Item *it;
+	value ret;
+
+	DBG("Creating def for '%s'", ender_item_name_get(i));
+	/* create the def */
+	it = ender_item_def_type_get(i);
+	switch (ender_item_type_get(it))
+	{
+		case ENDER_ITEM_TYPE_BASIC:
+		ret = ender_neko_basic_new(it, v);
+		break;
+
+		default:
+		failure("Unsupported type");
+		break;
+	}
+	ender_item_unref(it);
+	ender_item_unref(i);
+
+	return ret;
+}
+
+static value ender_neko_def_ctor(void)
+{
+	Ender_Item *i;
+	Ender_Value val = { 0 };
+	value v = val_this();
+	value intptr;
+
+	intptr = val_field(v, val_id("__intptr"));
+	val_check_kind(intptr, k_item);
+
+	i = val_data(intptr);
+	DBG("Def constructor for '%s'", ender_item_name_get(i));
+	return ender_neko_def_new(ender_item_ref(i), &val);
+
+}
+
+static value ender_neko_def_generate_class(Ender_Item *i)
+{
+	Ender_Item *it;
+	value ret;
+	value f;
+	Eina_List *items;
+
+	ret = alloc_object(NULL);
+	ender_neko_item_initialize(ret, i);
+
+	/* ctor */
+	f = alloc_function(ender_neko_def_ctor, 0, "new");
+	alloc_field(ret, val_id("new"), f);
+
+	/* functions  */
+	items = ender_item_def_functions_get(i);
+	EINA_LIST_FREE(items, it)
+	{
+		/* only add the method functions */
+		f = ender_neko_function_new(ender_item_ref(it));
+		alloc_field(ret, val_id(ender_item_name_get(it)), f);
+		ender_item_unref(it);
+	}
+
+	return ret;	
 }
 /*----------------------------------------------------------------------------*
  *                                 Structs                                    *
@@ -953,6 +1073,11 @@ static value ender_neko_namespace_generate_class(const char *name, Ender_Item *i
 		alloc_field(rel, val_id(name), ret);
 		break;
 
+		case ENDER_ITEM_TYPE_DEF:
+		ret = ender_neko_def_generate_class(ender_item_ref(i));
+		alloc_field(rel, val_id(name), ret);
+		break;
+
 		case ENDER_ITEM_TYPE_FUNCTION:
 		ret = ender_neko_function_new(ender_item_ref(i));
 		alloc_field(rel, val_id(name), ret);
@@ -964,7 +1089,7 @@ static value ender_neko_namespace_generate_class(const char *name, Ender_Item *i
 		break;
 
 		default:
-		printf("Unsupported type\n");
+		CRI("Unsupported type");
 		break;
 	}
 	ender_item_unref(i);
@@ -1014,7 +1139,7 @@ static void ender_neko_namespace_generate(const Ender_Lib *lib, Ender_Item *i, v
 				other = ender_lib_item_find(lib, current);
 				if (!other)
 				{
-					printf("TODO create intermediary namespaces %s %s\n", current, token);
+					ERR("TODO create intermediary namespace %s %s", current, token);
 				}
 				else
 				{
@@ -1067,6 +1192,7 @@ static value load(value api)
 	items = eina_list_merge(items, ender_lib_item_list(lib, ENDER_ITEM_TYPE_OBJECT));
 	items = eina_list_merge(items, ender_lib_item_list(lib, ENDER_ITEM_TYPE_FUNCTION));
 	items = eina_list_merge(items, ender_lib_item_list(lib, ENDER_ITEM_TYPE_ENUM));
+	items = eina_list_merge(items, ender_lib_item_list(lib, ENDER_ITEM_TYPE_DEF));
 	EINA_LIST_FREE(items, i)
 	{
 		ender_neko_namespace_generate(lib, i, rel);

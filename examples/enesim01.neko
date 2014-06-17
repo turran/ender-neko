@@ -7,6 +7,10 @@ var enesim = load("enesim");
 enesim.init()
 //var r = enesim.renderer.rectangle.new();
 var r = enesim.renderer.checker.new();
+var color = enesim.color.new();
+color = enesim.color.components_from(255, 255, 0, 0);
+r.odd_color_set(color);
+r.even_color_set(enesim.color.components_from(255, 0, 0, 0));
 r.width_set(50);
 r.height_set(50);
 var s = enesim.surface.new(enesim.format.ARGB8888, 320, 240);
