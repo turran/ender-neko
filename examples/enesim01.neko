@@ -5,19 +5,20 @@ var load = $loader.loadprim("ender@load", 1);
 var enesim = load("enesim");
 
 enesim.init()
-//var r = enesim.renderer.rectangle.new();
 var r = enesim.renderer.checker.new();
+$print("r = ", r, "\n");
+
 var color = enesim.color.new();
 color = enesim.color.components_from(255, 255, 0, 0);
 r.odd_color_set(color);
 r.even_color_set(enesim.color.components_from(255, 0, 0, 0));
 r.width_set(50);
 r.height_set(50);
-var s = enesim.surface.new(enesim.format.ARGB8888, 320, 240);
-var b = s.buffer_get();
 
-$print("b = ", b, "\n");
-$print("r = ", r, "\n");
+var s = enesim.surface.new(enesim.format.ARGB8888, 320, 240);
 $print("s = ", s, "\n");
+
+var b = s.buffer_get();
+$print("b = ", b, "\n");
 r.draw(s, enesim.rop.FILL, null, 0, 0, null);
 enesim.image.file.save("out.png", b,  null, null); 

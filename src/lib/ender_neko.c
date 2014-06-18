@@ -382,24 +382,12 @@ static Eina_Bool ender_neko_basic_to_val(Ender_Item *i, Ender_Value *v, value *v
 /*----------------------------------------------------------------------------*
  *                                  Arg                                       *
  *----------------------------------------------------------------------------*/
-/* convert the neko arg into an ender value */
-static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value val)
+static Eina_Bool ender_neko_arg_from_val_full(Ender_Item *type,
+		Ender_Item_Arg_Direction dir, Ender_Item_Arg_Transfer xfer,
+		Ender_Value *v, value val)
 {
-	Ender_Item *type;
-	Ender_Item_Arg_Direction dir;
 	Eina_Bool ret = EINA_FALSE;
 
-	type = ender_item_arg_type_get(i);
-	dir = ender_item_arg_direction_get(i);
-
-	if (!type)
-	{
-		ERR("No type found");
-		v->ptr = NULL;
-		return EINA_FALSE;
-	}
-
-	/* TODO handle the transfer */
 	/* handle the in/out direction */
 	if (dir == ENDER_ITEM_ARG_DIRECTION_IN)
 	{
@@ -416,8 +404,8 @@ static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value va
 			{
 				Ender_Item *other;
 
-				other = ender_item_def_type_get(i);
-				ret = ender_neko_arg_from_val(other, v, val);
+				other = ender_item_def_type_get(type);
+				ret = ender_neko_arg_from_val_full(other, dir, xfer, v, val);
 				ender_item_unref(other);
 			}
 			break;
@@ -440,6 +428,11 @@ static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value va
 						obj = val_data(intptr);
 						v->ptr = obj->o;
 						ret = EINA_TRUE;
+						/* in case of a transfer full, ref it again */
+						if (it == ENDER_ITEM_TYPE_OBJECT && xfer == ENDER_ITEM_ARG_TRANSFER_FULL)
+						{
+							WRN("Transfer full");
+						}
 					}
 				}
 				else if (val_is_null(val))
@@ -465,6 +458,30 @@ static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value va
 		/* for in/inout directions we always pass a pointer */
 	}
 	ender_item_unref(type);
+	return ret;
+}
+
+/* convert the neko arg into an ender value */
+static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value val)
+{
+	Ender_Item *type;
+	Ender_Item_Arg_Direction dir;
+	Ender_Item_Arg_Transfer xfer;
+	Eina_Bool ret = EINA_FALSE;
+
+	type = ender_item_arg_type_get(i);
+
+	if (!type)
+	{
+		ERR("No type found");
+		v->ptr = NULL;
+		return EINA_FALSE;
+	}
+
+	dir = ender_item_arg_direction_get(i);
+	xfer = ender_item_arg_transfer_get(i);
+
+	ret = ender_neko_arg_from_val_full(type, dir, xfer, v, val);
 	return ret;
 }
 
@@ -1055,6 +1072,16 @@ static value ender_neko_object_generate_class(Ender_Item *i)
 /*----------------------------------------------------------------------------*
  *                               Namespaces                                   *
  *----------------------------------------------------------------------------*/
+static value ender_neko_namespace_generate_empty_class(const char *name, value rel)
+{
+	value ret;
+
+	DBG("Creating intermediary namespace %s", name);
+	ret = alloc_object(NULL);
+	alloc_field(rel, val_id(name), ret);
+	return ret;
+}
+
 static value ender_neko_namespace_generate_class(const char *name, Ender_Item *i, value rel)
 {
 	value ret = val_null;
@@ -1139,7 +1166,7 @@ static void ender_neko_namespace_generate(const Ender_Lib *lib, Ender_Item *i, v
 				other = ender_lib_item_find(lib, current);
 				if (!other)
 				{
-					ERR("TODO create intermediary namespace %s %s", current, token);
+					rel = ender_neko_namespace_generate_empty_class(token, rel);
 				}
 				else
 				{
