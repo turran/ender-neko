@@ -650,6 +650,9 @@ static value ender_neko_attr_set(value *args, int nargs)
 	Ender_Neko_Object *obj;
 	Ender_Item *i;
 	Ender_Item *type;
+	Ender_Item_Type itype;
+	Ender_Item_Arg_Direction dir;
+	Ender_Item_Arg_Transfer xfer;
 	Eina_Bool valid;
 	Ender_Value v;
 	value intptr;
@@ -670,18 +673,16 @@ static value ender_neko_attr_set(value *args, int nargs)
 
 	/* finally set the value */
 	type = ender_item_attr_type_get(i);
-	switch (ender_item_type_get(type))
-	{
-		case ENDER_ITEM_TYPE_BASIC:
-		valid = ender_neko_basic_from_val(type, &v, args[0]);
-		break;
+	itype = ender_item_type_get(type);
 
-		default:
-		failure("Unsupported type");
-		break;
-	}
+	/* TODO add a way to get the direction/transfer from the getter/setter */
+	dir = ENDER_ITEM_ARG_DIRECTION_IN;
+	xfer = ENDER_ITEM_ARG_TRANSFER_FULL;
+
+	valid = ender_neko_arg_from_val_full(type, dir, xfer, &v, args[0]);
 	if (valid)
 	{
+		/* TODO handle exceptions */
 		valid = ender_item_attr_value_set(i, obj->o, &v, NULL);
 	}
 	ender_item_unref(type);
@@ -829,10 +830,8 @@ static value ender_neko_struct_new(void)
 	items = ender_item_struct_fields_get(i);
 	EINA_LIST_FREE(items, f)
 	{
-		Ender_Item *type;
 		value getter;
 		value setter;
-		
 		char *set_name;
 		char *get_name;
 
@@ -941,9 +940,41 @@ static value ender_neko_object_generate_proto(Ender_Item *i)
 		parent_proto = ender_neko_object_generate_proto(inherit);
 		ender_item_unref(inherit);
 	}
+	proto = alloc_object(NULL);
+
+	/* iterate over the properties */
+	items = ender_item_object_props_get(i);
+	EINA_LIST_FREE(items, f)
+	{
+		value intptr;
+		value getter;
+		value setter;
+		char *get_name;
+		char *set_name;
+
+
+		/* given that neko does not support generic setters/getters
+		 * we need to create the functions ourselves
+		 */
+		if (asprintf(&get_name, "get_%s", ender_item_name_get(f)) < 0)
+			break;
+		if (asprintf(&set_name, "set_%s", ender_item_name_get(f)) < 0)
+			break;
+
+		getter = alloc_function(ender_neko_attr_get, VAR_ARGS, get_name);
+		intptr = ender_neko_item_new(ender_item_ref(f));
+		((vfunction *)getter)->env = intptr;
+
+		setter = alloc_function(ender_neko_attr_set, VAR_ARGS, set_name);
+		intptr = ender_neko_item_new(ender_item_ref(f));
+		((vfunction *)setter)->env = intptr;
+
+		alloc_field(proto, val_id(set_name), setter);
+		alloc_field(proto, val_id(get_name), getter);
+		ender_item_unref(f);
+	}
 
 	/* iterate over the functions */
-	proto = alloc_object(NULL);
 	items = ender_item_object_functions_get(i);
 	EINA_LIST_FREE(items, f)
 	{
