@@ -406,7 +406,6 @@ static Eina_Bool ender_neko_arg_from_val_full(Ender_Item *type,
 
 				other = ender_item_def_type_get(type);
 				ret = ender_neko_arg_from_val_full(other, dir, xfer, v, val);
-				ender_item_unref(other);
 			}
 			break;
 
@@ -456,6 +455,8 @@ static Eina_Bool ender_neko_arg_from_val_full(Ender_Item *type,
 	else
 	{
 		/* for in/inout directions we always pass a pointer */
+		ERR("Unsupported direction %d", dir);
+		failure("Unsupported direction");
 	}
 	ender_item_unref(type);
 	return ret;
@@ -525,7 +526,8 @@ static Eina_Bool ender_neko_arg_to_val(Ender_Item *i, Ender_Value *v, Eina_Bool 
 	}
 	else
 	{
-
+		ERR("Unsupported direction %d", dir);
+		failure("Unsupported direction");
 	}
 	ender_item_unref(type);
 	return ret;
