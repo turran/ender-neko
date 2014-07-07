@@ -383,7 +383,7 @@ static Eina_Bool ender_neko_basic_to_val(Ender_Item *i, Ender_Value *v, value *v
  *                                  Arg                                       *
  *----------------------------------------------------------------------------*/
 static Eina_Bool ender_neko_arg_from_val_full(Ender_Item *type,
-		Ender_Item_Arg_Direction dir, Ender_Item_Arg_Transfer xfer,
+		Ender_Item_Arg_Direction dir, Ender_Item_Transfer xfer,
 		Ender_Value *v, value val)
 {
 	Eina_Bool ret = EINA_FALSE;
@@ -428,7 +428,7 @@ static Eina_Bool ender_neko_arg_from_val_full(Ender_Item *type,
 						v->ptr = obj->o;
 						ret = EINA_TRUE;
 						/* in case of a transfer full, ref it again */
-						if (it == ENDER_ITEM_TYPE_OBJECT && xfer == ENDER_ITEM_ARG_TRANSFER_FULL)
+						if (it == ENDER_ITEM_TYPE_OBJECT && xfer == ENDER_ITEM_TRANSFER_FULL)
 						{
 							WRN("Transfer full");
 						}
@@ -467,7 +467,7 @@ static Eina_Bool ender_neko_arg_from_val(Ender_Item *i, Ender_Value *v, value va
 {
 	Ender_Item *type;
 	Ender_Item_Arg_Direction dir;
-	Ender_Item_Arg_Transfer xfer;
+	Ender_Item_Transfer xfer;
 	Eina_Bool ret = EINA_FALSE;
 
 	type = ender_item_arg_type_get(i);
@@ -654,7 +654,7 @@ static value ender_neko_attr_set(value *args, int nargs)
 	Ender_Item *type;
 	Ender_Item_Type itype;
 	Ender_Item_Arg_Direction dir;
-	Ender_Item_Arg_Transfer xfer;
+	Ender_Item_Transfer xfer;
 	Eina_Bool valid;
 	Ender_Value v;
 	value intptr;
@@ -679,7 +679,7 @@ static value ender_neko_attr_set(value *args, int nargs)
 
 	/* TODO add a way to get the direction/transfer from the getter/setter */
 	dir = ENDER_ITEM_ARG_DIRECTION_IN;
-	xfer = ENDER_ITEM_ARG_TRANSFER_FULL;
+	xfer = ENDER_ITEM_TRANSFER_FULL;
 
 	valid = ender_neko_arg_from_val_full(type, dir, xfer, &v, args[0]);
 	if (valid)
@@ -719,7 +719,8 @@ static value ender_neko_attr_get(value *args, int nargs)
 		failure("Invalid number of arguments");
 
 	/* finally get the value */
-	ender_item_attr_value_get(i, obj->o, &v, NULL);
+	/* TODO use the transfer */
+	ender_item_attr_value_get(i, obj->o, NULL, &v, NULL);
 	type = ender_item_attr_type_get(i);
 	switch (ender_item_type_get(type))
 	{
